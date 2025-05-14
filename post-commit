@@ -5,6 +5,9 @@ cd E:/git-nlp-analyzer
 
 # Activate the virtual environment if you're using one
 E:/git-nlp-analyzer/venv/Scripts/activate.bat
+#!/bin/sh
+echo "Post-commit hook is running"
+python E:/git-nlp-analyzer/analyze_and_update_runbook.py
 
 # Run the Python script
 python E:/git-nlp-analyzer/analyze_and_update_runbook.py
