@@ -1,0 +1,50 @@
+import spacy
+import git
+import requests
+from datetime import datetime
+import os
+
+# Load spaCy NLP model
+nlp = spacy.load(en_core_web_sm)
+
+# Function to update Confluence runbook
+def update_runbook(commit_message, author, commit_date, keywords)
+    confluence_url = https://kavyasrisureddy4.atlassian.net/wiki/x/BgEB
+    auth = (KavyaSri Sureddy, ATATT3xFfGF0NZOr6ZQxJAYDlNjFKzr90WPqwdkoxao-5QIhWmeCpPlPVcrv3N_ufV1InGGJ1tC2bLQsDw7TBXZoNeLTJJI2WnHmLWv6LcSWUeTjG7aTEKD6cyelCQzDRT0iA_Asqb275FiisW7GPj98at9hxA2QCHeJnZHNkNABdM5-etKLRXY=28B90C18)  # Replace with your Confluence credentials
+
+    # Construct the data for Confluence API
+    runbook_update = {
+        version {number 2},  # Increment the version number
+        title Commit Runbook,
+        type page,
+        body {
+            storage {
+                value fh2Commit {commit_message[7]}h2pstrongAuthorstrong {author}ppstrongDatestrong {commit_date}ppstrongMessagestrong {commit_message}ppstrongKeywordsstrong {', '.join(keywords)}p,
+                representation storage
+            }
+        }
+    }
+
+    # Send a PUT request to update the page content on Confluence
+    response = requests.put(confluence_url, json=runbook_update, auth=auth)
+
+    if response.status_code == 200
+        print(Runbook updated successfully on Confluence!)
+    else
+        print(fFailed to update runbook {response.status_code} - {response.text})
+
+# Get the latest commit
+repo = git.Repo(.)
+commit = repo.head.commit
+commit_msg = commit.message.strip()
+
+# Analyze the commit message using spaCy
+doc = nlp(commit_msg)
+keywords = [token.text for token in doc if token.pos_ in [NOUN, VERB] and not token.is_stop]
+
+# Commit details
+author = commit.author.name
+commit_date = datetime.fromtimestamp(commit.committed_date).strftime('%Y-%m-%d %H%M')
+
+# Update the Confluence runbook
+update_runbook(commit_msg, author, commit_date, keywords)
