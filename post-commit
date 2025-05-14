@@ -1,8 +1,4 @@
-#!/bin/sh
-# Activate the virtual environment in Windows
-cmd /c "venv\Scripts\activate.bat && python \analyze_and_update_runbook.py"
-
-# Deactivate the virtual environment - no need for deactivate on Windows
-
-
- 
+@echo off
+call venv\Scripts\activate.bat
+python analyze_and_update_runbook.py
+call venv\Scripts\deactivate.bat
