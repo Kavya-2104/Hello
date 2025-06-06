@@ -1,3 +1,5 @@
 venv/
 analyze_and_update_runbook.py
+rando.py
+.env
 
