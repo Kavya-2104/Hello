@@ -1,8 +1,9 @@
 import os
 import re
 import requests
-import spacy
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from utils import normalize, log
 
 load_dotenv()
 
@@ -10,7 +11,6 @@ EMAIL = os.getenv("CONFLUENCE_EMAIL")
 TOKEN = os.getenv("CONFLUENCE_TOKEN")
 BASE_URL = os.getenv("CONFLUENCE_BASE_URL")
 
-nlp = spacy.load("en_core_web_sm")
 
 def get_all_spaces():
     spaces = []
@@ -27,6 +27,7 @@ def get_all_spaces():
         else:
             break
     return spaces
+
 
 def get_pages_in_space(space_key):
     pages = []
@@ -47,73 +48,179 @@ def get_pages_in_space(space_key):
         else:
             break
     return pages
+def normalize_text(text):
+    # Lowercase and remove spaces, colons, dashes, and "is"
+    text = text.lower()
+    text = re.sub(r'[:\-\s]+', '', text)  # remove colons, dashes, spaces
+    text = text.replace("is", "")
+    text = text.strip()
+    # Remove any leading/trailing non-alphanumeric chars (like hyphens or colons)
+    text = re.sub(r'^[^a-z0-9]+|[^a-z0-9]+$', '', text)
+    return text
 
-def extract_update_from_commit(commit_message):
-    parts = commit_message.split("] - ", 1)
-    description = parts[1] if len(parts) > 1 else commit_message
-    doc = nlp(description.lower())
+def update_field_in_body(existing_body, field_name, new_value):
+    soup = BeautifulSoup(existing_body, "html.parser")
+    paragraphs = soup.find_all("p")
+    target_norm = normalize_text(field_name)
+    field_found = False
 
-    if " to " in description.lower():
-        before_to, after_to = description.lower().split(" to ", 1)
+    for i, p in enumerate(paragraphs):
+        label_text = p.get_text(separator=" ", strip=True)
+        label_norm = normalize_text(label_text.split(':')[0])  # consider only part before colon
 
-        # Remove common verbs/auxiliary words to get field
-        field = before_to
-        for remove_word in ["updated", "changed", "is", "content"]:
-            field = field.replace(remove_word, "")
-        field = field.strip()
-        if not field:
-            field = "Content"  # fallback if empty
+        if label_norm == target_norm:
+            # Check if value is in same <p> after colon
+            parts = label_text.split(':', 1)
+            if len(parts) == 2 and parts[1].strip():
+                # Value exists in same paragraph, update it
+                new_text = f"{parts[0]}: {new_value}"
+                p.string = new_text
+                log(f"🔄 Updated existing field inline: {field_name} → {new_value}")
+            elif i + 1 < len(paragraphs):
+                # Value in next <p>, update next paragraph
+                paragraphs[i + 1].string = str(new_value)
+                log(f"🔄 Updated existing field next line: {field_name} → {new_value}")
+            else:
+                # No place to update value, append new <p>
+                new_value_tag = soup.new_tag("p")
+                new_value_tag.string = str(new_value)
+                p.insert_after(new_value_tag)
+                log(f"➕ Appended new value after label: {field_name} → {new_value}")
+            field_found = True
+            break
 
-        # Title case for consistency
-        field = " ".join([w.capitalize() for w in field.split()])
-        value = after_to.strip()
-        return field, value
+    if not field_found:
+        # Append at end if not found
+        log(f"➕ Appending new field: {field_name} → {new_value}")
+        new_label = soup.new_tag("p")
+        new_label.string = f"{field_name}:"
+        new_value_tag = soup.new_tag("p")
+        new_value_tag.string = str(new_value)
+        soup.append(new_label)
+        soup.append(new_value_tag)
 
-    return None, None
+    return str(soup)
 
-def update_page(page_id, commit_message, title):
-    url = f"{BASE_URL}/rest/api/content/{page_id}?expand=body.storage,version"
+def update_field_in_body(existing_body, field_name, new_value):
+    soup = BeautifulSoup(existing_body, "html.parser")
+    target_norm = normalize_text(field_name)
+    field_found = False
+
+    # Handle <br /> based fields in single <p> tag
+    for p in soup.find_all("p"):
+        if not p.text.strip():
+            continue  # skip empty <p> tags
+        # Replace <br> with newline for easier parsing
+        content = p.decode_contents().replace("<br/>", "\n").replace("<br />", "\n")
+        lines = content.split("\n")
+        new_lines = []
+        modified = False
+
+        for line in lines:
+            if ':' in line:
+                key_part, val_part = line.split(':', 1)
+                key_norm = normalize_text(key_part)
+                if key_norm == target_norm:
+                    new_lines.append(f"{key_part.strip()}: {new_value}")
+                    field_found = True
+                    modified = True
+                else:
+                    new_lines.append(line.strip())
+            else:
+                new_lines.append(line.strip())
+
+        if modified:
+            p.clear()
+            # Rebuild <p> with <br /> tags
+            for idx, line in enumerate(new_lines):
+                if idx > 0:
+                    p.append(soup.new_tag("br"))
+                p.append(line)
+            log(f"🔄 Updated inline in <br/>: {field_name} → {new_value}")
+            break
+
+    # Handle fields in separate <p> tags
+    if not field_found:
+        paragraphs = soup.find_all("p")
+        for i, p in enumerate(paragraphs):
+            label_text = p.get_text(separator=" ", strip=True)
+            label_norm = normalize_text(label_text.split(':')[0])
+
+            if label_norm == target_norm:
+                if ':' in label_text:
+                    new_text = f"{label_text.split(':')[0]}: {new_value}"
+                    p.string = new_text.strip()
+                    log(f"🔄 Updated existing inline field: {field_name} → {new_value}")
+                elif i + 1 < len(paragraphs):
+                    paragraphs[i + 1].string = str(new_value).strip()
+                    log(f"🔄 Updated value in next <p>: {field_name} → {new_value}")
+                field_found = True
+                break
+
+    # Append if not found
+    if not field_found:
+        log(f"➕ Appending new field: {field_name} → {new_value}")
+        new_p = soup.new_tag("p")
+        new_p.string = f"{field_name}: {new_value}"
+        soup.append(new_p)
+
+    # Cleanup: remove empty <p> tags
+    for tag in soup.find_all("p"):
+        if not tag.get_text(strip=True):
+            tag.decompose()
+
+    return str(soup)
+
+
+def update_page(page_id, commit_message):
+    url = f"{BASE_URL}/rest/api/content/{page_id}?expand=body.storage,version,title"
     res = requests.get(url, auth=(EMAIL, TOKEN))
     data = res.json()
 
-    current_content = data["body"]["storage"]["value"]
+    html_content = data["body"]["storage"]["value"]
     version = data["version"]["number"]
+    title = data["title"]
 
-    field, new_value = extract_update_from_commit(commit_message)
-    if not field or not new_value:
-        print("❌ Could not extract update field or value from commit message.")
+    updates = extract_updates(commit_message)
+    if not updates:
+        log("❌ No updates found in commit message.")
         return
 
-    # If field is "Content" replace the entire <body> content inside page (assuming it's HTML)
-    if field.lower() == "content":
-        # Replace entire body content between <body> tags if present or just replace whole content
-        # Simplified approach: replace entire content with new_value wrapped in <p>
-        updated_content = f"<p>{new_value}</p>"
-    else:
-        pattern = re.compile(rf"({re.escape(field)}:\s*)(.+)", re.IGNORECASE)
-        if not pattern.search(current_content):
-            print(f"⚠️ Field '{field}' not found in page content. Adding new line at end.")
-            updated_content = current_content + f"\n<p>{field}: {new_value}</p>"
-        else:
-            updated_content = pattern.sub(rf"\1{new_value}", current_content)
+    updated_html = html_content
+    for field, new_value in updates.items():
+        updated_html = update_field_in_body(updated_html, field, new_value)
 
-    payload = {
-        "id": str(page_id),
-        "type": "page",
-        "title": title,
-        "body": {
-            "storage": {
-                "value": updated_content,
-                "representation": "storage"
+    if updated_html != html_content:
+        payload = {
+            "id": page_id,
+            "type": "page",
+            "title": title,
+            "version": {"number": version + 1},
+            "body": {
+                "storage": {
+                    "value": updated_html,
+                    "representation": "storage"
+                }
             }
-        },
-        "version": {
-            "number": version + 1
         }
-    }
-
-    res = requests.put(url, json=payload, auth=(EMAIL, TOKEN))
-    if res.status_code == 200:
-        print(f"🔄 Successfully updated page {page_id} with {field}: {new_value}")
+        update_url = f"{BASE_URL}/rest/api/content/{page_id}"
+        update_res = requests.put(update_url, json=payload, auth=(EMAIL, TOKEN))
+        if update_res.status_code == 200:
+            log(f"✅ Page '{title}' updated successfully (version {version + 1}).")
+        else:
+            log(f"❌ Failed to update page '{title}'. Status: {update_res.status_code}")
     else:
-        print(f"❌ Failed to update page {page_id}: {res.status_code} - {res.text}")
+        log("ℹ️ No changes to update.")
+
+
+def extract_updates(commit_message):
+    pattern = r"([\w\s\-]+?)\s+(?:is updated to|is changed to|is|was|changed to|updated to|set to)\s+([^\s,;]+)"
+    matches = re.findall(pattern, commit_message, re.IGNORECASE)
+    cleaned = {}
+    for key, val in matches:
+        clean_key = key.strip().lstrip("-").strip().title()
+        cleaned[clean_key] = val.strip()
+    print(matches)
+    print(cleaned)
+    return cleaned
+
